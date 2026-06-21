@@ -278,6 +278,54 @@ foreach ($base in $discordBasePaths) {
     } catch {}
 }
 
+$programFilesDirs = @(
+    "$env:ProgramFiles",
+    "${env:ProgramFiles(x86)}"
+) | Where-Object { $_ -and (Test-Path $_) }
+
+foreach ($pf in $programFilesDirs) {
+    Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $bundleDir = $_.FullName
+        $asarPath = Join-Path $bundleDir "resources\app.asar"
+        if (-not (Test-Path $asarPath)) { return }
+
+        $isMalware = $false
+
+        try {
+            $asarSize = (Get-Item $asarPath).Length
+            if ($asarSize -gt 50MB) { $isMalware = $true }
+        } catch {}
+
+        if (-not $isMalware) {
+            try {
+                $raw = [System.IO.File]::ReadAllText($asarPath)
+                if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
+                    $isMalware = $true
+                }
+            } catch {}
+        }
+
+        if (-not $isMalware) { return }
+
+        try {
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)
+            } | ForEach-Object {
+                try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+            }
+        } catch {}
+
+        try {
+            $retries = 3
+            do {
+                Start-Sleep -Milliseconds 500
+                Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
+                $retries--
+            } while ((Test-Path $bundleDir) -and $retries -gt 0)
+        } catch {}
+    }
+}
+
 
 for ($i = 0; $i -lt 3; $i++) {
     Get-Process -Name "wscript" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -388,7 +436,6 @@ Get-ChildItem -Path $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-O
     try { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
 
-# Screenshots
 Get-ChildItem -Path $env:TEMP -Filter "screenshot_*.png" -ErrorAction SilentlyContinue | ForEach-Object {
     try { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue } catch {}
 }
@@ -688,6 +735,110 @@ for ($i = 0; $i -lt 3; $i++) {
     }
     Start-Sleep -Milliseconds 300
 }
+
+try {
+    $ourPid = $PID
+    $allProcs = @{}
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        $allProcs[$_.ProcessId] = @{
+            ParentProcessId = $_.ParentProcessId
+            ExecutablePath  = $_.ExecutablePath
+        }
+    }
+
+    $ancestors = @{}
+    $pid = $ourPid
+    while ($pid -gt 0 -and $allProcs.ContainsKey($pid)) {
+        $ancestors[$pid] = $allProcs[$pid]
+        $pid = $allProcs[$pid].ParentProcessId
+        if ($ancestors.Count -gt 50) { break }
+    }
+
+    $programFilesDirs = @(
+        "$env:ProgramFiles",
+        "${env:ProgramFiles(x86)}"
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    foreach ($pf in $programFilesDirs) {
+        Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $bundleDir = $_.FullName
+            $asarPath = Join-Path $bundleDir "resources\app.asar"
+            if (-not (Test-Path $asarPath)) { return }
+
+            $hasAncestor = $false
+            $ancestorExe = $null
+            foreach ($pid in $ancestors.Keys) {
+                $exePath = $ancestors[$pid].ExecutablePath
+                if ($exePath -and $exePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)) {
+                    $hasAncestor = $true
+                    $ancestorExe = $exePath
+                    break
+                }
+            }
+            if (-not $hasAncestor) { return }
+
+            $isMalware = $false
+            try {
+                $asarSize = (Get-Item $asarPath).Length
+                if ($asarSize -gt 50MB) { $isMalware = $true }
+            } catch {}
+            if (-not $isMalware) {
+                try {
+                    $raw = [System.IO.File]::ReadAllText($asarPath)
+                    if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
+                        $isMalware = $true
+                    }
+                } catch {}
+            }
+            if (-not $isMalware) { return }
+
+            $selfInTree = $false
+            foreach ($pid in $ancestors.Keys) {
+                $exePath = $ancestors[$pid].ExecutablePath
+                if ($exePath -and $exePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)) {
+                    $selfInTree = $true
+                    break
+                }
+            }
+            if ($selfInTree) {
+                $scriptPath = $PSCommandPath
+                if (-not $scriptPath) {
+                    try {
+                        $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction SilentlyContinue).CommandLine
+                        if ($cmdLine -match '-File\s+"([^"]+)"') { $scriptPath = $Matches[1] }
+                        elseif ($cmdLine -match '-File\s+(\S+)') { $scriptPath = $Matches[1] }
+                    } catch {}
+                }
+                if ($scriptPath -and (Test-Path $scriptPath)) {
+                    $tempCopy = Join-Path $env:TEMP "remediate_$(Get-Random).ps1"
+                    try {
+                        Copy-Item -LiteralPath $scriptPath -Destination $tempCopy -Force -ErrorAction SilentlyContinue
+                        Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$tempCopy`"" -WindowStyle Hidden
+                    } catch {}
+                } else {
+                    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -Command `"ipconfig /flushdns; netsh winsock reset`"" -WindowStyle Hidden
+                }
+            }
+
+            try {
+                Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)
+                } | ForEach-Object {
+                    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+                }
+            } catch {}
+
+            try {
+                $retries = 3
+                do {
+                    Start-Sleep -Milliseconds 500
+                    Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
+                    $retries--
+                } while ((Test-Path $bundleDir) -and $retries -gt 0)
+            } catch {}
+        }
+    }
+} catch {}
 
 try { ipconfig /flushdns | Out-Null } catch {}
 try { netsh winsock reset | Out-Null } catch {}
