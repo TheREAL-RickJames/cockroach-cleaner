@@ -101,7 +101,9 @@ if (-not $foundElectron) {
 }
 
 if ($foundElectron) {
-    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$env:REMEDIATE_WORKER='1'; iwr '$cleanerUrl' -UseBasicParsing | iex`""
+    $env:REMEDIATE_WORKER = '1'
+    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"iwr '$cleanerUrl' -UseBasicParsing | iex`""
+    Remove-Item Env:\REMEDIATE_WORKER -ErrorAction SilentlyContinue
 
     try {
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
