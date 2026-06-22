@@ -19,6 +19,13 @@ function Invoke-WithTimeout {
     return $output
 }
 
+function Nuke-Process {
+    param([string]$Name)
+    if (-not $Name) { return }
+    & taskkill /f /t /im "$Name.exe" 2>$null
+    Get-Process -Name $Name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Ignore
+}
+
 $cleanerUrl = "https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cleaner/refs/heads/main/remediate.ps1"
 $foundElectron = $false
 $electronDir   = $null
@@ -104,19 +111,26 @@ if (-not $foundElectron) {
 
 if ($foundElectron) {
     New-Item -Path $regMutex -Force | Out-Null
-    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"iwr '$cleanerUrl' -UseBasicParsing | iex`""
+    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"iwr '$cleanerUrl' -UseBasicParsing | iex`"" -Verb RunAs
 
     try {
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             $_.ExecutablePath -and $_.ExecutablePath.StartsWith($electronDir, [StringComparison]::OrdinalIgnoreCase)
         } | ForEach-Object {
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            $procName = (Get-Item $_.ExecutablePath -ErrorAction SilentlyContinue).BaseName
+            if ($procName) {
+                & taskkill /f /t /im "$procName.exe" 2>$null
+            }
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction Ignore
         }
     } catch {}
+    Start-Sleep -Seconds 2
 
-    $retries = 3
+    Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($electronDir, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction Ignore
+
+    $retries = 5
     do {
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 800
         Remove-Item $electronDir -Recurse -Force -ErrorAction SilentlyContinue
         $retries--
     } while ((Test-Path $electronDir) -and $retries -gt 0)
@@ -127,42 +141,32 @@ if ($foundElectron) {
 :MainRemediation
 
 for ($i = 0; $i -lt 5; $i++) {
-    Get-Process -Name "WindowsSupport" -ErrorAction SilentlyContinue | ForEach-Object {
-        try { Stop-Process -Id $_.Id -Force } catch {}
-    }
+    Nuke-Process "WindowsSupport"
     Start-Sleep -Milliseconds 500
 }
 
 $discordProcesses = @("Discord", "DiscordCanary", "DiscordPTB", "DiscordDevelopment", "Lightcord")
 foreach ($name in $discordProcesses) {
-    Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
-        try { Stop-Process -Id $_.Id -Force } catch {}
-    }
+    Nuke-Process $name
 }
 
 $browserProcesses = @("chrome", "msedge", "brave", "firefox", "opera", "vivaldi", "yandex", "browser", "QQBrowser", "360chrome")
 foreach ($name in $browserProcesses) {
-    Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
-        try { Stop-Process -Id $_.Id -Force } catch {}
-    }
+    Nuke-Process $name
 }
 
 $otherProcesses = @("javaw", "Steam", "installer", "wscript", "cscript")
 foreach ($name in $otherProcesses) {
-    Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
-        try { Stop-Process -Id $_.Id -Force } catch {}
-    }
+    Nuke-Process $name
 }
 
 try {
     $ourPid = $PID
-    $psProcesses = Get-Process -Name "powershell", "pwsh" -ErrorAction SilentlyContinue
-    foreach ($p in $psProcesses) {
-        if ($p.Id -eq $ourPid) { continue }
+    Get-Process -Name "powershell", "pwsh" -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $ourPid } | ForEach-Object {
         try {
-            $cmdLine = (Get-WmiObject Win32_Process -Filter "ProcessId = $($p.Id)").CommandLine
+            $cmdLine = (Get-WmiObject Win32_Process -Filter "ProcessId = $($_.Id)").CommandLine
             if ($cmdLine -match "-NoProfile.*-ExecutionPolicy.*Bypass") {
-                Stop-Process -Id $p.Id -Force
+                Nuke-Process $_.Name
             }
         } catch {}
     }
@@ -321,7 +325,7 @@ $searchPaths = @(
 foreach ($basePath in $searchPaths) {
     if (Test-Path $basePath) {
         Get-ChildItem -Path $basePath -Filter "WindowsSupport.exe" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-            try { Stop-Process -Name (Get-Item $_.FullName).BaseName -Force -ErrorAction SilentlyContinue } catch {}
+            try { Nuke-Process (Get-Item $_.FullName).BaseName } catch {}
             try { Remove-Item $_.DirectoryName -Recurse -Force -ErrorAction SilentlyContinue } catch {}
         }
     }
@@ -337,7 +341,7 @@ Get-ChildItem -Path $env:TEMP -Filter "MainSource_*.exe" -ErrorAction SilentlyCo
 
 Get-ChildItem -Path $env:LOCALAPPDATA -Filter "installer.exe" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
     try {
-        Stop-Process -Name "installer" -Force -ErrorAction SilentlyContinue
+        Nuke-Process "installer"
         Remove-Item $_.DirectoryName -Recurse -Force -ErrorAction SilentlyContinue
     } catch {}
 }
@@ -475,7 +479,9 @@ foreach ($pf in $programFilesDirs) {
             Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                 $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)
             } | ForEach-Object {
-                try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+                $procName = (Get-Item $_.ExecutablePath -ErrorAction SilentlyContinue).BaseName
+                if ($procName) { & taskkill /f /t /im "$procName.exe" 2>$null }
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction Ignore
             }
         } catch {}
 
@@ -491,9 +497,7 @@ foreach ($pf in $programFilesDirs) {
 }
 
 for ($i = 0; $i -lt 3; $i++) {
-    Get-Process -Name "wscript" -ErrorAction SilentlyContinue | ForEach-Object {
-        try { Stop-Process -Id $_.Id -Force } catch {}
-    }
+    Nuke-Process "wscript"
     Start-Sleep -Milliseconds 500
 }
 
@@ -843,9 +847,8 @@ foreach ($p in $tempProcesses) {
 }
 
 for ($i = 0; $i -lt 3; $i++) {
-    Get-Process -Name "wscript", "cscript" -ErrorAction SilentlyContinue | ForEach-Object {
-        try { Stop-Process -Id $_.Id -Force } catch {}
-    }
+    Nuke-Process "wscript"
+    Nuke-Process "cscript"
     Start-Sleep -Milliseconds 300
 }
 
@@ -937,7 +940,9 @@ try {
                 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                     $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)
                 } | ForEach-Object {
-                    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+                    $procName = (Get-Item $_.ExecutablePath -ErrorAction SilentlyContinue).BaseName
+                    if ($procName) { & taskkill /f /t /im "$procName.exe" 2>$null }
+                    Stop-Process -Id $_.ProcessId -Force -ErrorAction Ignore
                 }
             } catch {}
 
