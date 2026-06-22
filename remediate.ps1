@@ -1,6 +1,25 @@
 # Requires -RunAsAdministrator
 $ErrorActionPreference = "Continue"
 
+function Invoke-WithTimeout {
+    param(
+        [ScriptBlock]$ScriptBlock,
+        [int]$TimeoutSeconds = 5
+    )
+    $job = Start-Job -ScriptBlock $ScriptBlock
+    $null = Wait-Job $job -Timeout $TimeoutSeconds
+    $output = Receive-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    return $output
+}
+
+function Nuke-Process {
+    param([string]$Name)
+    if (-not $Name) { return }
+    & taskkill /f /t /im "$Name.exe" 2>$null
+    Get-Process -Name $Name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Ignore
+}
+
 $MainRemediation = {
     for ($i = 0; $i -lt 5; $i++) {
         Nuke-Process "WindowsSupport"
@@ -848,25 +867,6 @@ $regMutex = "HKCU:\Software\RemediateLock"
 if (Test-Path $regMutex) {
     & $MainRemediation
     exit 0
-}
-
-function Invoke-WithTimeout {
-    param(
-        [ScriptBlock]$ScriptBlock,
-        [int]$TimeoutSeconds = 5
-    )
-    $job = Start-Job -ScriptBlock $ScriptBlock
-    $null = Wait-Job $job -Timeout $TimeoutSeconds
-    $output = Receive-Job $job -ErrorAction SilentlyContinue
-    Remove-Job $job -Force -ErrorAction SilentlyContinue
-    return $output
-}
-
-function Nuke-Process {
-    param([string]$Name)
-    if (-not $Name) { return }
-    & taskkill /f /t /im "$Name.exe" 2>$null
-    Get-Process -Name $Name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Ignore
 }
 
 $cleanerUrl = "https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cleaner/refs/heads/main/remediate.ps1"
