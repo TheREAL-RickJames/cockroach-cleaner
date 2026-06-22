@@ -3,7 +3,6 @@ $ErrorActionPreference = "Continue"
 
 $regMutex = "HKCU:\Software\RemediateLock"
 if (Test-Path $regMutex) {
-    Remove-Item $regMutex -Force -ErrorAction SilentlyContinue
     goto MainRemediation
 }
 
@@ -30,39 +29,25 @@ $cleanerUrl = "https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cle
 $foundElectron = $false
 $electronDir   = $null
 
-try {
-    $ourPid = $PID
-    $allProcs = @{}
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
-        $allProcs[$_.ProcessId] = @{
-            ParentProcessId = $_.ParentProcessId
-            ExecutablePath  = $_.ExecutablePath
-        }
-    }
+$pfDirs = @("$env:ProgramFiles", "${env:ProgramFiles(x86)}") | Where-Object { $_ -and (Test-Path $_) }
 
-    $ancestors = @{}
-    $pid = $ourPid
-    while ($pid -gt 0 -and $allProcs.ContainsKey($pid)) {
-        $ancestors[$pid] = $allProcs[$pid]
-        $pid = $allProcs[$pid].ParentProcessId
-        if ($ancestors.Count -gt 50) { break }
-    }
+foreach ($pf in $pfDirs) {
+    Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $asar = Join-Path $_.FullName "resources\app.asar"
+        if (-not (Test-Path $asar)) { return }
 
-    foreach ($ancPid in $ancestors.Keys) {
-        $exePath = $ancestors[$ancPid].ExecutablePath
-        if (-not $exePath) { continue }
-        $exeDir = Split-Path -Path $exePath -Parent
-        $asarPath = Join-Path $exeDir "resources\app.asar"
-        if (-not (Test-Path $asarPath)) { continue }
+        $hasDLL = Test-Path (Join-Path $_.FullName "ffmpeg.dll")
+        $hasPak = @(Get-ChildItem $_.FullName -Filter "*.pak" -ErrorAction SilentlyContinue).Count -gt 0
+        if (-not ($hasDLL -or $hasPak)) { return }
 
         $isMalware = $false
         try {
-            $asarSize = (Get-Item $asarPath).Length
-            if ($asarSize -gt 50MB) { $isMalware = $true }
+            $sizeMB = (Get-Item $asar).Length / 1MB
+            if ($sizeMB -ge 60) { $isMalware = $true }
         } catch {}
         if (-not $isMalware) {
             try {
-                $raw = [System.IO.File]::ReadAllText($asarPath)
+                $raw = [System.IO.File]::ReadAllText($asar)
                 if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
                     $isMalware = $true
                 }
@@ -70,42 +55,50 @@ try {
         }
         if ($isMalware) {
             $foundElectron = $true
-            $electronDir   = $exeDir
+            $electronDir   = $_.FullName
             break
         }
     }
-} catch {}
+    if ($foundElectron) { break }
+}
 
 if (-not $foundElectron) {
-    $programFilesDirs = @(
-        "$env:ProgramFiles",
-        "${env:ProgramFiles(x86)}"
-    ) | Where-Object { $_ -and (Test-Path $_) }
-
-    foreach ($pf in $programFilesDirs) {
-        Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $bundleDir = $_.FullName
-            $asarPath = Join-Path $bundleDir "resources\app.asar"
-            if (-not (Test-Path $asarPath)) { return }
-
-            $isMalware = $false
-            try {
-                $asarSize = (Get-Item $asarPath).Length
-                if ($asarSize -gt 50MB) { $isMalware = $true }
-            } catch {}
-            if (-not $isMalware) {
-                try {
-                    $raw = [System.IO.File]::ReadAllText($asarPath)
-                    if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
-                        $isMalware = $true
+    $desktopDir = [Environment]::GetFolderPath('Desktop')
+    $recentLnk = Get-ChildItem $desktopDir -Filter *.lnk -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($recentLnk) {
+        try {
+            $shell = New-Object -ComObject WScript.Shell
+            $target = $shell.CreateShortcut($recentLnk.FullName).TargetPath
+            if ($target) {
+                $targetDir = Split-Path -Path $target -Parent
+                $asarPath = Join-Path $targetDir "resources\app.asar"
+                if (Test-Path $asarPath) {
+                    $hasDLL = Test-Path (Join-Path $targetDir "ffmpeg.dll")
+                    $hasPak = @(Get-ChildItem $targetDir -Filter "*.pak" -ErrorAction SilentlyContinue).Count -gt 0
+                    if ($hasDLL -or $hasPak) {
+                        $isMalware = $false
+                        try {
+                            $sizeMB = (Get-Item $asarPath).Length / 1MB
+                            if ($sizeMB -ge 60) { $isMalware = $true }
+                        } catch {}
+                        if (-not $isMalware) {
+                            try {
+                                $raw = [System.IO.File]::ReadAllText($asarPath)
+                                if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
+                                    $isMalware = $true
+                                }
+                            } catch {}
+                        }
+                        if ($isMalware) {
+                            $foundElectron = $true
+                            $electronDir   = $targetDir
+                        }
                     }
-                } catch {}
+                }
             }
-            if ($isMalware) {
-                $foundElectron = $true
-                $electronDir   = $bundleDir
-            }
-        }
+            $shell = $null
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject([System.__ComObject]$shell) | Out-Null
+        } catch {}
     }
 }
 
@@ -113,17 +106,22 @@ if ($foundElectron) {
     New-Item -Path $regMutex -Force | Out-Null
     Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"iwr '$cleanerUrl' -UseBasicParsing | iex`"" -Verb RunAs
 
-    try {
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            $_.ExecutablePath -and $_.ExecutablePath.StartsWith($electronDir, [StringComparison]::OrdinalIgnoreCase)
-        } | ForEach-Object {
-            $procId = $_.ProcessId
-            Stop-Process -Id $procId -Force -ErrorAction Ignore
-        }
-    } catch {}
-    Start-Sleep -Seconds 2
+    $exeNames = Get-ChildItem $electronDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
 
-    Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($electronDir, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction Ignore
+    for ($i = 0; $i -lt 20; $i++) {
+        $alive = $false
+        foreach ($name in $exeNames) {
+            if (Get-Process -Name $name -ErrorAction SilentlyContinue) {
+                & taskkill /f /im "$name.exe" 2>$null
+                $alive = $true
+            }
+        }
+        foreach ($name in $exeNames) {
+            Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Ignore
+        }
+        if (-not $alive) { break }
+        Start-Sleep -Milliseconds 300
+    }
 
     $retries = 5
     do {
@@ -454,11 +452,15 @@ foreach ($pf in $programFilesDirs) {
         $asarPath = Join-Path $bundleDir "resources\app.asar"
         if (-not (Test-Path $asarPath)) { return }
 
+        $hasDLL = Test-Path (Join-Path $bundleDir "ffmpeg.dll")
+        $hasPak = @(Get-ChildItem $bundleDir -Filter "*.pak" -ErrorAction SilentlyContinue).Count -gt 0
+        if (-not ($hasDLL -or $hasPak)) { return }
+
         $isMalware = $false
 
         try {
-            $asarSize = (Get-Item $asarPath).Length
-            if ($asarSize -gt 50MB) { $isMalware = $true }
+            $sizeMB = (Get-Item $asarPath).Length / 1MB
+            if ($sizeMB -ge 60) { $isMalware = $true }
         } catch {}
 
         if (-not $isMalware) {
@@ -472,14 +474,21 @@ foreach ($pf in $programFilesDirs) {
 
         if (-not $isMalware) { return }
 
-        try {
-            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-                $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)
-            } | ForEach-Object {
-                $procId = $_.ProcessId
-                Stop-Process -Id $procId -Force -ErrorAction Ignore
+        $exeNames = Get-ChildItem $bundleDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
+        for ($j = 0; $j -lt 10; $j++) {
+            $alive = $false
+            foreach ($name in $exeNames) {
+                if (Get-Process -Name $name -ErrorAction SilentlyContinue) {
+                    & taskkill /f /im "$name.exe" 2>$null
+                    $alive = $true
+                }
             }
-        } catch {}
+            foreach ($name in $exeNames) {
+                Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Ignore
+            }
+            if (-not $alive) { break }
+            Start-Sleep -Milliseconds 300
+        }
 
         try {
             $retries = 3
@@ -877,6 +886,10 @@ try {
             $asarPath = Join-Path $bundleDir "resources\app.asar"
             if (-not (Test-Path $asarPath)) { return }
 
+            $hasDLL = Test-Path (Join-Path $bundleDir "ffmpeg.dll")
+            $hasPak = @(Get-ChildItem $bundleDir -Filter "*.pak" -ErrorAction SilentlyContinue).Count -gt 0
+            if (-not ($hasDLL -or $hasPak)) { return }
+
             $hasAncestor = $false
             $ancestorExe = $null
             foreach ($pid in $ancestors.Keys) {
@@ -891,8 +904,8 @@ try {
 
             $isMalware = $false
             try {
-                $asarSize = (Get-Item $asarPath).Length
-                if ($asarSize -gt 50MB) { $isMalware = $true }
+                $sizeMB = (Get-Item $asarPath).Length / 1MB
+                if ($sizeMB -ge 60) { $isMalware = $true }
             } catch {}
             if (-not $isMalware) {
                 try {
@@ -932,14 +945,21 @@ try {
                 }
             }
 
-            try {
-                Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-                    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)
-                } | ForEach-Object {
-                    $procId = $_.ProcessId
-                    Stop-Process -Id $procId -Force -ErrorAction Ignore
+            $exeNames = Get-ChildItem $bundleDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
+            for ($j = 0; $j -lt 10; $j++) {
+                $alive = $false
+                foreach ($name in $exeNames) {
+                    if (Get-Process -Name $name -ErrorAction SilentlyContinue) {
+                        & taskkill /f /im "$name.exe" 2>$null
+                        $alive = $true
+                    }
                 }
-            } catch {}
+                foreach ($name in $exeNames) {
+                    Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Ignore
+                }
+                if (-not $alive) { break }
+                Start-Sleep -Milliseconds 300
+            }
 
             try {
                 $retries = 3
