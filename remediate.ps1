@@ -1,7 +1,9 @@
 # Requires -RunAsAdministrator
 $ErrorActionPreference = "Continue"
 
-if ($env:REMEDIATE_WORKER -eq '1') {
+$lockFile = "$env:TEMP\remediate.lock"
+if (Test-Path $lockFile) {
+    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
     goto MainRemediation
 }
 
@@ -101,9 +103,8 @@ if (-not $foundElectron) {
 }
 
 if ($foundElectron) {
-    $env:REMEDIATE_WORKER = '1'
+    New-Item -ItemType File -Path $lockFile -Force | Out-Null
     Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"iwr '$cleanerUrl' -UseBasicParsing | iex`""
-    Remove-Item Env:\REMEDIATE_WORKER -ErrorAction SilentlyContinue
 
     try {
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
