@@ -117,11 +117,8 @@ if ($foundElectron) {
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             $_.ExecutablePath -and $_.ExecutablePath.StartsWith($electronDir, [StringComparison]::OrdinalIgnoreCase)
         } | ForEach-Object {
-            $procName = (Get-Item $_.ExecutablePath -ErrorAction SilentlyContinue).BaseName
-            if ($procName) {
-                & taskkill /f /t /im "$procName.exe" 2>$null
-            }
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction Ignore
+            $procId = $_.ProcessId
+            Stop-Process -Id $procId -Force -ErrorAction Ignore
         }
     } catch {}
     Start-Sleep -Seconds 2
@@ -479,9 +476,8 @@ foreach ($pf in $programFilesDirs) {
             Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                 $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)
             } | ForEach-Object {
-                $procName = (Get-Item $_.ExecutablePath -ErrorAction SilentlyContinue).BaseName
-                if ($procName) { & taskkill /f /t /im "$procName.exe" 2>$null }
-                Stop-Process -Id $_.ProcessId -Force -ErrorAction Ignore
+                $procId = $_.ProcessId
+                Stop-Process -Id $procId -Force -ErrorAction Ignore
             }
         } catch {}
 
@@ -940,9 +936,8 @@ try {
                 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
                     $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)
                 } | ForEach-Object {
-                    $procName = (Get-Item $_.ExecutablePath -ErrorAction SilentlyContinue).BaseName
-                    if ($procName) { & taskkill /f /t /im "$procName.exe" 2>$null }
-                    Stop-Process -Id $_.ProcessId -Force -ErrorAction Ignore
+                    $procId = $_.ProcessId
+                    Stop-Process -Id $procId -Force -ErrorAction Ignore
                 }
             } catch {}
 
