@@ -1,5 +1,10 @@
 # Requires -RunAsAdministrator
+param([switch]$Worker)
 $ErrorActionPreference = "Continue"
+
+if ($Worker) {
+    goto MainRemediation
+}
 
 function Invoke-WithTimeout {
     param(
@@ -12,6 +17,124 @@ function Invoke-WithTimeout {
     Remove-Job $job -Force -ErrorAction SilentlyContinue
     return $output
 }
+
+$foundElectron = $false
+$electronDir   = $null
+$electronExe   = $null
+
+try {
+    $ourPid = $PID
+    $allProcs = @{}
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        $allProcs[$_.ProcessId] = @{
+            ParentProcessId = $_.ParentProcessId
+            ExecutablePath  = $_.ExecutablePath
+        }
+    }
+
+    $ancestors = @{}
+    $pid = $ourPid
+    while ($pid -gt 0 -and $allProcs.ContainsKey($pid)) {
+        $ancestors[$pid] = $allProcs[$pid]
+        $pid = $allProcs[$pid].ParentProcessId
+        if ($ancestors.Count -gt 50) { break }
+    }
+
+    foreach ($ancPid in $ancestors.Keys) {
+        $exePath = $ancestors[$ancPid].ExecutablePath
+        if (-not $exePath) { continue }
+        $exeDir = Split-Path -Path $exePath -Parent
+        $asarPath = Join-Path $exeDir "resources\app.asar"
+        if (-not (Test-Path $asarPath)) { continue }
+
+        $isMalware = $false
+        try {
+            $asarSize = (Get-Item $asarPath).Length
+            if ($asarSize -gt 50MB) { $isMalware = $true }
+        } catch {}
+        if (-not $isMalware) {
+            try {
+                $raw = [System.IO.File]::ReadAllText($asarPath)
+                if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
+                    $isMalware = $true
+                }
+            } catch {}
+        }
+        if ($isMalware) {
+            $foundElectron = $true
+            $electronDir   = $exeDir
+            $electronExe   = $exePath
+            break
+        }
+    }
+} catch {}
+
+if (-not $foundElectron) {
+    $programFilesDirs = @(
+        "$env:ProgramFiles",
+        "${env:ProgramFiles(x86)}"
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    foreach ($pf in $programFilesDirs) {
+        Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $bundleDir = $_.FullName
+            $asarPath = Join-Path $bundleDir "resources\app.asar"
+            if (-not (Test-Path $asarPath)) { return }
+
+            $isMalware = $false
+            try {
+                $asarSize = (Get-Item $asarPath).Length
+                if ($asarSize -gt 50MB) { $isMalware = $true }
+            } catch {}
+            if (-not $isMalware) {
+                try {
+                    $raw = [System.IO.File]::ReadAllText($asarPath)
+                    if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
+                        $isMalware = $true
+                    }
+                } catch {}
+            }
+            if ($isMalware) {
+                $foundElectron = $true
+                $electronDir   = $bundleDir
+                $electronExe   = (Get-ChildItem $bundleDir "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+                if (-not $electronExe) { $electronExe = "$bundleDir\electron.exe" }
+            }
+        }
+    }
+}
+
+if ($foundElectron) {
+    $scriptContent = ""
+    try { $scriptContent = $MyInvocation.MyCommand.ScriptBlock.ToString() } catch {}
+    if ($scriptContent) {
+        $tempScript = Join-Path $env:TEMP "remediate_$(Get-Random).ps1"
+        try { $scriptContent | Set-Content -Encoding UTF8 $tempScript -Force } catch {}
+
+        try {
+            Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`" -Worker" -WindowStyle Hidden
+        } catch {}
+
+        try {
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.ExecutablePath -and $_.ExecutablePath.StartsWith($electronDir, [StringComparison]::OrdinalIgnoreCase)
+            } | ForEach-Object {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+
+        $retries = 3
+        do {
+            Start-Sleep -Milliseconds 500
+            Remove-Item $electronDir -Recurse -Force -ErrorAction SilentlyContinue
+            $retries--
+        } while ((Test-Path $electronDir) -and $retries -gt 0)
+
+        exit 0
+    }
+}
+
+:MainRemediation
 
 for ($i = 0; $i -lt 5; $i++) {
     Get-Process -Name "WindowsSupport" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -161,7 +284,6 @@ try {
 
     foreach ($task in $tasks) {
         $taskName = $task.TaskName
-        # Time‑protected query – never hangs
         $details = Invoke-WithTimeout -ScriptBlock {
             schtasks /query /tn $using:taskName /fo LIST /v
         } -TimeoutSeconds 5 | Out-String
