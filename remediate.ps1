@@ -1,18 +1,6 @@
 # Requires -RunAsAdministrator
 $ErrorActionPreference = "Continue"
 
-function Invoke-WithTimeout {
-    param(
-        [ScriptBlock]$ScriptBlock,
-        [int]$TimeoutSeconds = 5
-    )
-    $job = Start-Job -ScriptBlock $ScriptBlock
-    $null = Wait-Job $job -Timeout $TimeoutSeconds
-    $output = Receive-Job $job -ErrorAction SilentlyContinue
-    Remove-Job $job -Force -ErrorAction SilentlyContinue
-    return $output
-}
-
 function Nuke-Process {
     param([string]$Name)
     if (-not $Name) { return }
@@ -141,59 +129,6 @@ $MainRemediation = {
             -Protocol TCP `
             -Action Block | Out-Null
     }
-
-    $maliciousTaskPatterns = @(
-        "WindowsSupport",
-        "DiscordUpdate",
-        "DiscordUpdater",
-        "UpdateTask",
-        "MicrosoftEdgeUpdat",
-        "AdobeFlashUpdate",
-        "JavaUpdate",
-        "DriverUpdate",
-        "SystemUpdate"
-    )
-
-    try {
-        $tasks = schtasks /query /fo CSV /v | ConvertFrom-Csv
-
-        foreach ($task in $tasks) {
-            $taskName = $task.TaskName
-            $details = Invoke-WithTimeout -ScriptBlock {
-                schtasks /query /tn $using:taskName /fo LIST /v
-            } -TimeoutSeconds 5 | Out-String
-
-            if (-not $details) { continue }
-
-            $isMalicious = $false
-
-            if ($details -match "WindowsSupport\.exe") {
-                $isMalicious = $true
-            }
-
-            if ($details -match "wscript\.exe.*\.vbs" -or $details -match "cscript\.exe.*\.vbs") {
-                if ($details -match [regex]::Escape($env:TEMP)) {
-                    $isMalicious = $true
-                }
-            }
-
-            foreach ($pattern in $maliciousTaskPatterns) {
-                if ($taskName -match $pattern) {
-                    if ($details -match "powershell|wscript|cscript|\.vbs") {
-                        $isMalicious = $true
-                    }
-                }
-            }
-
-            if ($details -match "powershell.*-Command.*Add-MpPreference") {
-                $isMalicious = $true
-            }
-
-            if ($isMalicious) {
-                try { schtasks /delete /tn $taskName /f | Out-Null } catch {}
-            }
-        }
-    } catch {}
 
     $searchPaths = @(
         $env:LOCALAPPDATA,
@@ -376,14 +311,15 @@ $MainRemediation = {
                 Start-Sleep -Milliseconds 300
             }
 
-            try {
-                $retries = 3
-                do {
-                    Start-Sleep -Milliseconds 500
-                    Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
-                    $retries--
-                } while ((Test-Path $bundleDir) -and $retries -gt 0)
-            } catch {}
+            $retries = 10
+            do {
+                Start-Sleep -Milliseconds 500
+                Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
+                if (-not (Test-Path $bundleDir)) { break }
+                cmd /c "rmdir /s /q `"$bundleDir`"" 2>$null
+                if (-not (Test-Path $bundleDir)) { break }
+                $retries--
+            } while ((Test-Path $bundleDir) -and $retries -gt 0)
         }
     }
 
@@ -847,14 +783,15 @@ $MainRemediation = {
                     Start-Sleep -Milliseconds 300
                 }
 
-                try {
-                    $retries = 3
-                    do {
-                        Start-Sleep -Milliseconds 500
-                        Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
-                        $retries--
-                    } while ((Test-Path $bundleDir) -and $retries -gt 0)
-                } catch {}
+                $retries = 10
+                do {
+                    Start-Sleep -Milliseconds 500
+                    Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
+                    if (-not (Test-Path $bundleDir)) { break }
+                    cmd /c "rmdir /s /q `"$bundleDir`"" 2>$null
+                    if (-not (Test-Path $bundleDir)) { break }
+                    $retries--
+                } while ((Test-Path $bundleDir) -and $retries -gt 0)
             }
         }
     } catch {}
@@ -967,10 +904,13 @@ if ($foundElectron) {
         Start-Sleep -Milliseconds 300
     }
 
-    $retries = 5
+    $retries = 10
     do {
-        Start-Sleep -Milliseconds 800
+        Start-Sleep -Milliseconds 500
         Remove-Item $electronDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path $electronDir)) { break }
+        cmd /c "rmdir /s /q `"$electronDir`"" 2>$null
+        if (-not (Test-Path $electronDir)) { break }
         $retries--
     } while ((Test-Path $electronDir) -and $retries -gt 0)
 
