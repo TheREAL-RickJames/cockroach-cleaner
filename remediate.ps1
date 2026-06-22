@@ -1,7 +1,17 @@
 # Requires -RunAsAdministrator
-
 $ErrorActionPreference = "Continue"
 
+function Invoke-WithTimeout {
+    param(
+        [ScriptBlock]$ScriptBlock,
+        [int]$TimeoutSeconds = 5
+    )
+    $job = Start-Job -ScriptBlock $ScriptBlock
+    $null = Wait-Job $job -Timeout $TimeoutSeconds
+    $output = Receive-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    return $output
+}
 
 for ($i = 0; $i -lt 5; $i++) {
     Get-Process -Name "WindowsSupport" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -47,7 +57,49 @@ try {
 
 Start-Sleep -Seconds 2
 
+$regPaths = @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+)
 
+foreach ($path in $regPaths) {
+    if (Test-Path $path) {
+        try { Remove-ItemProperty -Path $path -Name "DisableTaskMgr" -ErrorAction SilentlyContinue } catch {}
+
+        $suspiciousPolicies = @(
+            "DisableRegistryTools",
+            "DisableCMD",
+            "NoViewOnDrive",
+            "NoDrives",
+            "DisableChangePassword",
+            "HideFastUserSwitching",
+            "NoLogoff",
+            "NoClose",
+            "NoFolderOptions",
+            "NoControlPanel"
+        )
+        foreach ($policy in $suspiciousPolicies) {
+            try {
+                $val = Get-ItemProperty -Path $path -Name $policy -ErrorAction SilentlyContinue
+                if ($val -ne $null) {
+                    Remove-ItemProperty -Path $path -Name $policy -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+    }
+}
+
+$extraPolicyPaths = @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer",
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop",
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate"
+)
+foreach ($path in $extraPolicyPaths) {
+    if (Test-Path $path) {
+        try { Remove-ItemProperty -Path $path -Name "DisableTaskMgr" -ErrorAction SilentlyContinue } catch {}
+    }
+}
 
 $c2IP = "46.151.182.157"
 
@@ -92,8 +144,6 @@ if (-not (Get-NetFirewallRule -DisplayName $nugetRule -ErrorAction SilentlyConti
         -Action Block | Out-Null
 }
 
-
-
 $maliciousTaskPatterns = @(
     "WindowsSupport",
     "DiscordUpdate",
@@ -111,7 +161,12 @@ try {
 
     foreach ($task in $tasks) {
         $taskName = $task.TaskName
-        $details = schtasks /query /tn $taskName /fo LIST /v | Out-String
+        # Time‑protected query – never hangs
+        $details = Invoke-WithTimeout -ScriptBlock {
+            schtasks /query /tn $using:taskName /fo LIST /v
+        } -TimeoutSeconds 5 | Out-String
+
+        if (-not $details) { continue }
 
         $isMalicious = $false
 
@@ -143,8 +198,6 @@ try {
     }
 } catch {}
 
-
-
 $searchPaths = @(
     $env:LOCALAPPDATA,
     $env:APPDATA,
@@ -156,6 +209,7 @@ $searchPaths = @(
 foreach ($basePath in $searchPaths) {
     if (Test-Path $basePath) {
         Get-ChildItem -Path $basePath -Filter "WindowsSupport.exe" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Stop-Process -Name (Get-Item $_.FullName).BaseName -Force -ErrorAction SilentlyContinue } catch {}
             try { Remove-Item $_.DirectoryName -Recurse -Force -ErrorAction SilentlyContinue } catch {}
         }
     }
@@ -175,7 +229,6 @@ Get-ChildItem -Path $env:LOCALAPPDATA -Filter "installer.exe" -Recurse -ErrorAct
         Remove-Item $_.DirectoryName -Recurse -Force -ErrorAction SilentlyContinue
     } catch {}
 }
-
 
 $discordBasePaths = @(
     "$env:LOCALAPPDATA\Discord",
@@ -262,7 +315,6 @@ foreach ($base in $discordBasePaths) {
                             $isMalicious = $true
                         }
 
-
                         if ($isMalicious -or $content -notmatch "require\('./core\.asar'\)") {
                             try {
                                 Copy-Item $indexPath "$indexPath.malware-bak" -Force -ErrorAction SilentlyContinue
@@ -325,7 +377,6 @@ foreach ($pf in $programFilesDirs) {
         } catch {}
     }
 }
-
 
 for ($i = 0; $i -lt 3; $i++) {
     Get-Process -Name "wscript" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -407,7 +458,6 @@ if (Test-Path $startupPath) {
     }
 }
 
-
 $wingetPath = "$env:TEMP\WinGet"
 if (Test-Path $wingetPath) {
     try { Remove-Item $wingetPath -Recurse -Force -ErrorAction SilentlyContinue } catch {}
@@ -477,7 +527,6 @@ if (Test-Path $exodusPwFile) {
 Get-ChildItem -Path $env:TEMP -Filter "2fa_codes_*.txt" -ErrorAction SilentlyContinue | ForEach-Object {
     try { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue } catch {}
 }
-
 
 try { Set-MpPreference -DisableRealtimeMonitoring $false } catch {}
 try { Set-MpPreference -DisableBehaviorMonitoring $false } catch {}
@@ -584,53 +633,6 @@ try {
     }
 } catch {}
 
-
-$regPaths = @(
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System",
-    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
-)
-
-foreach ($path in $regPaths) {
-    if (Test-Path $path) {
-        try { Remove-ItemProperty -Path $path -Name "DisableTaskMgr" -ErrorAction SilentlyContinue } catch {}
-
-        $suspiciousPolicies = @(
-            "DisableRegistryTools",
-            "DisableCMD",
-            "NoViewOnDrive",
-            "NoDrives",
-            "DisableChangePassword",
-            "HideFastUserSwitching",
-            "NoLogoff",
-            "NoClose",
-            "NoFolderOptions",
-            "NoControlPanel"
-        )
-        foreach ($policy in $suspiciousPolicies) {
-            try {
-                $val = Get-ItemProperty -Path $path -Name $policy -ErrorAction SilentlyContinue
-                if ($val -ne $null) {
-                    Remove-ItemProperty -Path $path -Name $policy -ErrorAction SilentlyContinue
-                }
-            } catch {}
-        }
-    }
-}
-
-$extraPolicyPaths = @(
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer",
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop",
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate"
-)
-foreach ($path in $extraPolicyPaths) {
-    if (Test-Path $path) {
-        try { Remove-ItemProperty -Path $path -Name "DisableTaskMgr" -ErrorAction SilentlyContinue } catch {}
-    }
-}
-
-
-
 $runPaths = @(
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
@@ -697,16 +699,15 @@ try {
     }
 } catch {}
 
-
 $jsTargets = @("discord.js", "inj.js", "output.js")
 foreach ($file in $jsTargets) {
-    $tempFile = "$env:TEMP\$file"
+    $tempFile = "$env:TEMP$file"
     if (Test-Path $tempFile) { try { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue } catch {} }
 
-    $userFile = "$env:USERPROFILE\$file"
+    $userFile = "$env:USERPROFILE$file"
     if (Test-Path $userFile) { try { Remove-Item $userFile -Force -ErrorAction SilentlyContinue } catch {} }
 
-    $appDataFile = "$env:APPDATA\$file"
+    $appDataFile = "$env:APPDATA$file"
     if (Test-Path $appDataFile) { try { Remove-Item $appDataFile -Force -ErrorAction SilentlyContinue } catch {} }
 }
 
