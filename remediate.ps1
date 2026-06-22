@@ -18,6 +18,7 @@ function Invoke-WithTimeout {
     return $output
 }
 
+$cleanerUrl = "https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cleaner/refs/heads/main/remediate.ps1"
 $foundElectron = $false
 $electronDir   = $null
 $electronExe   = $null
@@ -105,33 +106,32 @@ if (-not $foundElectron) {
 }
 
 if ($foundElectron) {
-    $scriptContent = ""
-    try { $scriptContent = $MyInvocation.MyCommand.ScriptBlock.ToString() } catch {}
-    if ($scriptContent) {
-        $tempScript = Join-Path $env:TEMP "remediate_$(Get-Random).ps1"
-        try { $scriptContent | Set-Content -Encoding UTF8 $tempScript -Force } catch {}
-
+    $tempScript = Join-Path $env:TEMP "remediate_$(Get-Random).ps1"
+    try {
+        Invoke-WebRequest -Uri $cleanerUrl -OutFile $tempScript -UseBasicParsing -ErrorAction SilentlyContinue
+    } catch {}
+    if (Test-Path $tempScript) {
         try {
             Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`" -Worker" -WindowStyle Hidden
         } catch {}
-
-        try {
-            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-                $_.ExecutablePath -and $_.ExecutablePath.StartsWith($electronDir, [StringComparison]::OrdinalIgnoreCase)
-            } | ForEach-Object {
-                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
-
-        $retries = 3
-        do {
-            Start-Sleep -Milliseconds 500
-            Remove-Item $electronDir -Recurse -Force -ErrorAction SilentlyContinue
-            $retries--
-        } while ((Test-Path $electronDir) -and $retries -gt 0)
-
-        exit 0
     }
+
+    try {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.ExecutablePath -and $_.ExecutablePath.StartsWith($electronDir, [StringComparison]::OrdinalIgnoreCase)
+        } | ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
+    $retries = 3
+    do {
+        Start-Sleep -Milliseconds 500
+        Remove-Item $electronDir -Recurse -Force -ErrorAction SilentlyContinue
+        $retries--
+    } while ((Test-Path $electronDir) -and $retries -gt 0)
+
+    exit 0
 }
 
 :MainRemediation
