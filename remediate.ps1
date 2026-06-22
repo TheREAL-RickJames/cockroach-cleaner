@@ -1,8 +1,7 @@
 # Requires -RunAsAdministrator
-param([switch]$Worker)
 $ErrorActionPreference = "Continue"
 
-if ($Worker) {
+if ($env:REMEDIATE_WORKER -eq '1') {
     goto MainRemediation
 }
 
@@ -21,7 +20,6 @@ function Invoke-WithTimeout {
 $cleanerUrl = "https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cleaner/refs/heads/main/remediate.ps1"
 $foundElectron = $false
 $electronDir   = $null
-$electronExe   = $null
 
 try {
     $ourPid = $PID
@@ -64,7 +62,6 @@ try {
         if ($isMalware) {
             $foundElectron = $true
             $electronDir   = $exeDir
-            $electronExe   = $exePath
             break
         }
     }
@@ -98,23 +95,13 @@ if (-not $foundElectron) {
             if ($isMalware) {
                 $foundElectron = $true
                 $electronDir   = $bundleDir
-                $electronExe   = (Get-ChildItem $bundleDir "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-                if (-not $electronExe) { $electronExe = "$bundleDir\electron.exe" }
             }
         }
     }
 }
 
 if ($foundElectron) {
-    $tempScript = Join-Path $env:TEMP "remediate_$(Get-Random).ps1"
-    try {
-        Invoke-WebRequest -Uri $cleanerUrl -OutFile $tempScript -UseBasicParsing -ErrorAction SilentlyContinue
-    } catch {}
-    if (Test-Path $tempScript) {
-        try {
-            Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`" -Worker" -WindowStyle Hidden
-        } catch {}
-    }
+    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$env:REMEDIATE_WORKER='1'; iwr '$cleanerUrl' -UseBasicParsing | iex`""
 
     try {
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
