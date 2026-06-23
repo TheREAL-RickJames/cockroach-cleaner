@@ -756,15 +756,38 @@ $MainRemediation = {
                             elseif ($cmdLine -match '-File\s+(\S+)') { $scriptPath = $Matches[1] }
                         } catch {}
                     }
+
+                    $tempCopy = $null
                     if ($scriptPath -and (Test-Path $scriptPath)) {
                         $tempCopy = Join-Path $env:TEMP "remediate_$(Get-Random).ps1"
-                        try {
-                            Copy-Item -LiteralPath $scriptPath -Destination $tempCopy -Force -ErrorAction SilentlyContinue
-                            Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$tempCopy`"" -WindowStyle Hidden
-                        } catch {}
-                    } else {
-                        Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -Command `"ipconfig /flushdns; netsh winsock reset`"" -WindowStyle Hidden
+                        try { Copy-Item -LiteralPath $scriptPath -Destination $tempCopy -Force -ErrorAction SilentlyContinue } catch {}
                     }
+
+                    $cmdArgs = if ($tempCopy) {
+                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$tempCopy`""
+                    } else {
+                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"ipconfig /flushdns; netsh winsock reset`""
+                    }
+
+                    $psi = New-Object System.Diagnostics.ProcessStartInfo
+                    $psi.FileName = "cmd.exe"
+                    $psi.Arguments = $cmdArgs
+                    $psi.UseShellExecute = $false
+                    $psi.CreateNoWindow = $true
+                    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                    [System.Diagnostics.Process]::Start($psi) | Out-Null
+
+                    try {
+                        $getConsole = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();' -Name 'ConsoleHelper' -Namespace 'Win32' -PassThru
+                        $showWin   = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);' -Name 'ShowHelper' -Namespace 'Win32' -PassThru
+                        $hwnd = $getConsole::GetConsoleWindow()
+                        if ($hwnd -ne [IntPtr]::Zero) {
+                            $showWin::ShowWindow($hwnd, 0)
+                        }
+                    } catch {}
+
+                    Start-Sleep -Milliseconds 300
+                    exit 0
                 }
 
                 $exeNames = Get-ChildItem $bundleDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
