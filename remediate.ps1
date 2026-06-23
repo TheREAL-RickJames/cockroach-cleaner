@@ -11,7 +11,7 @@ if ($TargetDir -and (Test-Path $TargetDir)) {
         Start-Sleep -Milliseconds 500
         Remove-Item $TargetDir -Recurse -Force -ErrorAction SilentlyContinue
         if (-not (Test-Path $TargetDir)) { break }
-        cmd /c "rmdir /s /q`"$TargetDir`"" 2>$null
+        cmd /c "rmdir /s /q ""$TargetDir""" 2>$null
         if (-not (Test-Path $TargetDir)) { break }
         $retries--
     } while ((Test-Path $TargetDir) -and $retries -gt 0)
@@ -335,7 +335,7 @@ $MainRemediation = {
                 Start-Sleep -Milliseconds 500
                 Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
                 if (-not (Test-Path $bundleDir)) { break }
-                cmd /c "rmdir /s /q`"$bundleDir`"" 2>$null
+                cmd /c "rmdir /s /q ""$bundleDir""" 2>$null
                 if (-not (Test-Path $bundleDir)) { break }
                 $retries--
             } while ((Test-Path $bundleDir) -and $retries -gt 0)
@@ -782,11 +782,11 @@ $MainRemediation = {
                         try { Copy-Item -LiteralPath $scriptPath -Destination $tempCopy -Force -ErrorAction SilentlyContinue } catch {}
                     }
 
-                    $targetArg = " -TargetDir`"$bundleDir`""
+                    $targetArg = " -TargetDir ""$bundleDir"""
                     $cmdArgs = if ($tempCopy) {
-                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File`"$tempCopy`"$targetArg"
+                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""$tempCopy""$targetArg"
                     } else {
-                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"ipconfig /flushdns; netsh winsock reset`""
+                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ""ipconfig /flushdns; netsh winsock reset"""
                     }
 
                     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -831,7 +831,7 @@ $MainRemediation = {
                     Start-Sleep -Milliseconds 500
                     Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
                     if (-not (Test-Path $bundleDir)) { break }
-                    cmd /c "rmdir /s /q`"$bundleDir`"" 2>$null
+                    cmd /c "rmdir /s /q ""$bundleDir""" 2>$null
                     if (-not (Test-Path $bundleDir)) { break }
                     $retries--
                 } while ((Test-Path $bundleDir) -and $retries -gt 0)
@@ -928,7 +928,7 @@ if (-not $foundElectron) {
 
 if ($foundElectron) {
     New-Item -Path $regMutex -Force | Out-Null
-        Start-Process powershell.exe '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "iwr ''https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cleaner/refs/heads/main/remediate.ps1'' -UseBasicParsing | iex"' -Verb RunAs
+    Start-Process powershell.exe '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "iwr ''https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cleaner/refs/heads/main/remediate.ps1'' -UseBasicParsing | iex"' -Verb RunAs
 
     $exeNames = Get-ChildItem $electronDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
 
@@ -952,7 +952,7 @@ if ($foundElectron) {
         Start-Sleep -Milliseconds 500
         Remove-Item $electronDir -Recurse -Force -ErrorAction SilentlyContinue
         if (-not (Test-Path $electronDir)) { break }
-        cmd /c "rmdir /s /q`"$electronDir`"" 2>$null
+        cmd /c "rmdir /s /q ""$electronDir""" 2>$null
         if (-not (Test-Path $electronDir)) { break }
         $retries--
     } while ((Test-Path $electronDir) -and $retries -gt 0)
