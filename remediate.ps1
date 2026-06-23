@@ -5,26 +5,81 @@ param(
     [string]$TargetDir
 )
 
-if ($TargetDir -and (Test-Path $TargetDir)) {
-    $retries = 10
-    do {
-        Start-Sleep -Milliseconds 500
-        Remove-Item $TargetDir -Recurse -Force -ErrorAction SilentlyContinue
-        if (-not (Test-Path $TargetDir)) { break }
-        cmd /c "rmdir /s /q ""$TargetDir""" 2>$null
-        if (-not (Test-Path $TargetDir)) { break }
-        $retries--
-    } while ((Test-Path $TargetDir) -and $retries -gt 0)
-
-    & $MainRemediation
-    exit 0
-}
-
 function Nuke-Process {
     param([string]$Name)
     if (-not $Name) { return }
     & taskkill /f /t /im "$Name.exe" 2>$null
     Get-Process -Name $Name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Ignore
+}
+
+function Start-Watcher {
+    param(
+        [string[]]$ExtraProcessNames
+    )
+
+    $existingJob = Get-Job -Name "MalwareWatcher" -ErrorAction SilentlyContinue
+    if ($existingJob) {
+        Stop-Job -Name "MalwareWatcher" -ErrorAction SilentlyContinue
+        Remove-Job -Name "MalwareWatcher" -Force -ErrorAction SilentlyContinue
+    }
+
+    $knownBad = @(
+        "WindowsSupport",
+        "installer",
+        "wscript",
+        "cscript"
+    )
+
+    $allNames = @($knownBad) + $ExtraProcessNames | Select-Object -Unique
+
+    $watcherScript = {
+        param([string[]]$Names)
+        while ($true) {
+            foreach ($name in $Names) {
+                try { Nuke-Process $name } catch {}
+            }
+
+            $pfDirs = @("$env:ProgramFiles", "${env:ProgramFiles(x86)}") | Where-Object { $_ -and (Test-Path $_) }
+            foreach ($pf in $pfDirs) {
+                Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                    $dir = $_.FullName
+                    $asar = Join-Path $dir "resources\app.asar"
+                    if (-not (Test-Path $asar)) { return }
+
+                    $hasDLL = Test-Path (Join-Path $dir "ffmpeg.dll")
+                    $hasPak = (Get-ChildItem $dir -Filter "*.pak" -ErrorAction SilentlyContinue).Count -gt 0
+                    if (-not ($hasDLL -or $hasPak)) { return }
+
+                    $isMalware = $false
+                    try {
+                        $sizeMB = (Get-Item $asar).Length / 1MB
+                        if ($sizeMB -ge 60) { $isMalware = $true }
+                    } catch {}
+                    if (-not $isMalware) {
+                        try {
+                            $raw = [System.IO.File]::ReadAllText($asar)
+                            if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
+                                $isMalware = $true
+                            }
+                        } catch {}
+                    }
+                    if (-not $isMalware) { return }
+
+                    $exeNames = Get-ChildItem $dir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
+                    foreach ($name in $exeNames) {
+                        try { Nuke-Process $name } catch {}
+                    }
+
+                    try { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+                    try { cmd /c "rmdir /s /q ""$dir""" 2>$null } catch {}
+                }
+            }
+
+            Start-Sleep -Seconds 10
+        }
+    }
+
+    Start-Job -Name "MalwareWatcher" -ScriptBlock $watcherScript -ArgumentList (,$allNames) -ErrorAction SilentlyContinue | Out-Null
 }
 
 $MainRemediation = {
@@ -698,153 +753,173 @@ $MainRemediation = {
         Start-Sleep -Milliseconds 300
     }
 
-    try {
-        $ourPid = $PID
-        $allProcs = @{}
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
-            $allProcs[$_.ProcessId] = @{
-                ParentProcessId = $_.ParentProcessId
-                ExecutablePath  = $_.ExecutablePath
-            }
+    try { ipconfig /flushdns | Out-Null } catch {}
+    try { netsh winsock reset | Out-Null } catch {}
+}
+
+if (-not $TargetDir) {
+    $ourPid = $PID
+    $allProcs = @{}
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        $allProcs[$_.ProcessId] = @{
+            ParentProcessId = $_.ParentProcessId
+            ExecutablePath  = $_.ExecutablePath
         }
+    }
 
-        $ancestors = @{}
-        $pid = $ourPid
-        while ($pid -gt 0 -and $allProcs.ContainsKey($pid)) {
-            $ancestors[$pid] = $allProcs[$pid]
-            $pid = $allProcs[$pid].ParentProcessId
-            if ($ancestors.Count -gt 50) { break }
-        }
+    $ancestors = @{}
+    $p = $ourPid
+    while ($p -gt 0 -and $allProcs.ContainsKey($p) -and $ancestors.Count -lt 50) {
+        $ancestors[$p] = $allProcs[$p]
+        $p = $allProcs[$p].ParentProcessId
+    }
 
-        $programFilesDirs = @(
-            "$env:ProgramFiles",
-            "${env:ProgramFiles(x86)}"
-        ) | Where-Object { $_ -and (Test-Path $_) }
+    $bundleDir = $null
+    foreach ($pid in ($ancestors.Keys | Sort-Object -Descending)) {
+        $exePath = $ancestors[$pid].ExecutablePath
+        if (-not $exePath) { continue }
 
-        foreach ($pf in $programFilesDirs) {
-            Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-                $bundleDir = $_.FullName
-                $asarPath = Join-Path $bundleDir "resources\app.asar"
-                if (-not (Test-Path $asarPath)) { return }
+        $dir = Split-Path -Parent $exePath
+        $asar = Join-Path $dir "resources\app.asar"
+        if (-not (Test-Path $asar)) { continue }
 
-                $hasDLL = Test-Path (Join-Path $bundleDir "ffmpeg.dll")
-                $hasPak = @(Get-ChildItem $bundleDir -Filter "*.pak" -ErrorAction SilentlyContinue).Count -gt 0
-                if (-not ($hasDLL -or $hasPak)) { return }
+        $hasDLL = Test-Path (Join-Path $dir "ffmpeg.dll")
+        $hasPak = (Get-ChildItem $dir -Filter "*.pak" -ErrorAction SilentlyContinue).Count -gt 0
+        if (-not ($hasDLL -or $hasPak)) { continue }
 
-                $hasAncestor = $false
-                $ancestorExe = $null
-                foreach ($pid in $ancestors.Keys) {
-                    $exePath = $ancestors[$pid].ExecutablePath
-                    if ($exePath -and $exePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)) {
-                        $hasAncestor = $true
-                        $ancestorExe = $exePath
-                        break
-                    }
+        $isMalware = $false
+        try {
+            $sizeMB = (Get-Item $asar).Length / 1MB
+            if ($sizeMB -ge 60) { $isMalware = $true }
+        } catch {}
+        if (-not $isMalware) {
+            try {
+                $raw = [System.IO.File]::ReadAllText($asar)
+                if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
+                    $isMalware = $true
                 }
-                if (-not $hasAncestor) { return }
+            } catch {}
+        }
+
+        if ($isMalware) {
+            $bundleDir = $dir
+            break
+        }
+    }
+
+    if (-not $bundleDir) {
+        $pfDirs = @("$env:ProgramFiles", "${env:ProgramFiles(x86)}") | Where-Object { $_ -and (Test-Path $_) }
+        :pfScan foreach ($pf in $pfDirs) {
+            Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $dir = $_.FullName
+                $asar = Join-Path $dir "resources\app.asar"
+                if (-not (Test-Path $asar)) { continue }
+
+                $hasDLL = Test-Path (Join-Path $dir "ffmpeg.dll")
+                $hasPak = (Get-ChildItem $dir -Filter "*.pak" -ErrorAction SilentlyContinue).Count -gt 0
+                if (-not ($hasDLL -or $hasPak)) { continue }
 
                 $isMalware = $false
                 try {
-                    $sizeMB = (Get-Item $asarPath).Length / 1MB
+                    $sizeMB = (Get-Item $asar).Length / 1MB
                     if ($sizeMB -ge 60) { $isMalware = $true }
                 } catch {}
                 if (-not $isMalware) {
                     try {
-                        $raw = [System.IO.File]::ReadAllText($asarPath)
+                        $raw = [System.IO.File]::ReadAllText($asar)
                         if ($raw.Contains("discord.js") -and $raw.Contains("inj.js") -and $raw.Contains("output.js")) {
                             $isMalware = $true
                         }
                     } catch {}
                 }
-                if (-not $isMalware) { return }
 
-                $selfInTree = $false
-                foreach ($pid in $ancestors.Keys) {
-                    $exePath = $ancestors[$pid].ExecutablePath
-                    if ($exePath -and $exePath.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase)) {
-                        $selfInTree = $true
-                        break
-                    }
-                }
-                if ($selfInTree) {
-                    $scriptPath = $PSCommandPath
-                    if (-not $scriptPath) {
-                        try {
-                            $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction SilentlyContinue).CommandLine
-                            if ($cmdLine -match '-File\s+"([^"]+)"') { $scriptPath = $Matches[1] }
-                            elseif ($cmdLine -match '-File\s+(\S+)') { $scriptPath = $Matches[1] }
-                        } catch {}
-                    }
-
-                    $tempCopy = $null
-                    if ($scriptPath -and (Test-Path $scriptPath)) {
-                        $tempCopy = Join-Path $env:TEMP "remediate_$(Get-Random).ps1"
-                        try { Copy-Item -LiteralPath $scriptPath -Destination $tempCopy -Force -ErrorAction SilentlyContinue } catch {}
-                    }
-
-                    $targetArg = " -TargetDir ""$bundleDir"""
-                    $cmdArgs = if ($tempCopy) {
-                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""$tempCopy""$targetArg"
-                    } else {
-                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ""ipconfig /flushdns; netsh winsock reset"""
-                    }
-
-                    $psi = New-Object System.Diagnostics.ProcessStartInfo
-                    $psi.FileName = "cmd.exe"
-                    $psi.Arguments = $cmdArgs
-                    $psi.UseShellExecute = $false
-                    $psi.CreateNoWindow = $true
-                    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-                    [System.Diagnostics.Process]::Start($psi) | Out-Null
-
-                    try {
-                        $getConsole = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();' -Name 'ConsoleHelper' -Namespace 'Win32' -PassThru
-                        $showWin   = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);' -Name 'ShowHelper' -Namespace 'Win32' -PassThru
-                        $hwnd = $getConsole::GetConsoleWindow()
-                        if ($hwnd -ne [IntPtr]::Zero) {
-                            $showWin::ShowWindow($hwnd, 0)
-                        }
-                    } catch {}
-
-                    Start-Sleep -Milliseconds 300
-                    exit 0
-                }
-
-                $exeNames = Get-ChildItem $bundleDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
-                for ($j = 0; $j -lt 10; $j++) {
-                    $alive = $false
-                    foreach ($name in $exeNames) {
-                        if (Get-Process -Name $name -ErrorAction SilentlyContinue) {
-                            & taskkill /f /im "$name.exe" 2>$null
-                            $alive = $true
+                if ($isMalware) {
+                    $selfInTree = $false
+                    foreach ($pid in $ancestors.Keys) {
+                        if ($ancestors[$pid].ExecutablePath -and
+                            $ancestors[$pid].ExecutablePath.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)) {
+                            $selfInTree = $true
+                            break
                         }
                     }
-                    foreach ($name in $exeNames) {
-                        Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Ignore
+                    if ($selfInTree) {
+                        $bundleDir = $dir
+                        break :pfScan
                     }
-                    if (-not $alive) { break }
-                    Start-Sleep -Milliseconds 300
                 }
-
-                $retries = 10
-                do {
-                    Start-Sleep -Milliseconds 500
-                    Remove-Item $bundleDir -Recurse -Force -ErrorAction SilentlyContinue
-                    if (-not (Test-Path $bundleDir)) { break }
-                    cmd /c "rmdir /s /q ""$bundleDir""" 2>$null
-                    if (-not (Test-Path $bundleDir)) { break }
-                    $retries--
-                } while ((Test-Path $bundleDir) -and $retries -gt 0)
             }
         }
+    }
+
+    if ($bundleDir) {
+        $scriptPath = $PSCommandPath
+        if (-not $scriptPath) {
+            try {
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction SilentlyContinue).CommandLine
+                if ($cmdLine -match '-File\s+"([^"]+)"') { $scriptPath = $Matches[1] }
+                elseif ($cmdLine -match '-File\s+(\S+)') { $scriptPath = $Matches[1] }
+            } catch {}
+        }
+
+        $tempCopy = $null
+        if ($scriptPath -and (Test-Path $scriptPath)) {
+            $tempCopy = Join-Path $env:TEMP "remediate_$(Get-Random).ps1"
+            try { Copy-Item -LiteralPath $scriptPath -Destination $tempCopy -Force } catch {}
+        }
+
+        $targetArg = " -TargetDir ""$bundleDir"""
+        $cmdArgs = if ($tempCopy) {
+            "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""$tempCopy""$targetArg"
+        } else {
+            "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ""ipconfig /flushdns; netsh winsock reset"""
+        }
+
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "cmd.exe"
+        $psi.Arguments = $cmdArgs
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+
+        try {
+            $getConsole = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();' -Name 'ConsoleHelper' -Namespace 'Win32' -PassThru
+            $showWin   = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);' -Name 'ShowHelper' -Namespace 'Win32' -PassThru
+            $hwnd = $getConsole::GetConsoleWindow()
+            if ($hwnd -ne [IntPtr]::Zero) {
+                $showWin::ShowWindow($hwnd, 0)
+            }
+        } catch {}
+
+        Start-Sleep -Milliseconds 300
+        exit 0
+    }
+}
+
+if ($TargetDir -and (Test-Path $TargetDir)) {
+    $exeNames = @()
+    try {
+        $exeNames = Get-ChildItem $TargetDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
     } catch {}
 
-    try { ipconfig /flushdns | Out-Null } catch {}
-    try { netsh winsock reset | Out-Null } catch {}
+    $retries = 10
+    do {
+        Start-Sleep -Milliseconds 500
+        Remove-Item $TargetDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path $TargetDir)) { break }
+        cmd /c "rmdir /s /q ""$TargetDir""" 2>$null
+        if (-not (Test-Path $TargetDir)) { break }
+        $retries--
+    } while ((Test-Path $TargetDir) -and $retries -gt 0)
+
+    Start-Watcher -ExtraProcessNames $exeNames
+    & $MainRemediation
+    exit 0
 }
 
 $regMutex = "HKCU:\Software\RemediateLock"
 if (Test-Path $regMutex) {
+    Start-Watcher
     & $MainRemediation
     exit 0
 }
@@ -928,9 +1003,15 @@ if (-not $foundElectron) {
 
 if ($foundElectron) {
     New-Item -Path $regMutex -Force | Out-Null
+
+    $exeNames = @()
+    try {
+        $exeNames = Get-ChildItem $electronDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
+    } catch {}
+
     Start-Process powershell.exe '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "iwr ''https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cleaner/refs/heads/main/remediate.ps1'' -UseBasicParsing | iex"' -Verb RunAs
 
-    $exeNames = Get-ChildItem $electronDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
+    Start-Watcher -ExtraProcessNames $exeNames
 
     for ($i = 0; $i -lt 20; $i++) {
         $alive = $false
@@ -960,4 +1041,5 @@ if ($foundElectron) {
     exit 0
 }
 
+Start-Watcher
 & $MainRemediation
