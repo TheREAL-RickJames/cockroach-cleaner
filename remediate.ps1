@@ -786,7 +786,7 @@ $MainRemediation = {
                     $cmdArgs = if ($tempCopy) {
                         "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File`"$tempCopy`"$targetArg"
                     } else {
-                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -Command`"ipconfig /flushdns; netsh winsock reset`""
+                        "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"ipconfig /flushdns; netsh winsock reset`""
                     }
 
                     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -928,7 +928,7 @@ if (-not $foundElectron) {
 
 if ($foundElectron) {
     New-Item -Path $regMutex -Force | Out-Null
-    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command`"iwr '$cleanerUrl' -UseBasicParsing | iex`"" -Verb RunAs
+        Start-Process powershell.exe '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "iwr ''https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cleaner/refs/heads/main/remediate.ps1'' -UseBasicParsing | iex"' -Verb RunAs
 
     $exeNames = Get-ChildItem $electronDir -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.BaseName }
 
