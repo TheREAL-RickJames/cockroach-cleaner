@@ -39,7 +39,17 @@ function Start-Watcher {
                 try { Nuke-Process $name } catch {}
             }
 
-            $pfDirs = @("$env:ProgramFiles", "${env:ProgramFiles(x86)}") | Where-Object { $_ -and (Test-Path $_) }
+            $pfDirs = @(
+                "$env:ProgramFiles",
+                "${env:ProgramFiles(x86)}",
+                "$env:LOCALAPPDATA",
+                "$env:APPDATA",
+                "$env:USERPROFILE\AppData\Local",
+                "$env:USERPROFILE\AppData\Roaming",
+                "$env:LOCALAPPDATA\Programs",
+                "$env:TEMP"
+            ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
             foreach ($pf in $pfDirs) {
                 Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
                     $dir = $_.FullName
@@ -338,8 +348,14 @@ $MainRemediation = {
 
     $programFilesDirs = @(
         "$env:ProgramFiles",
-        "${env:ProgramFiles(x86)}"
-    ) | Where-Object { $_ -and (Test-Path $_) }
+        "${env:ProgramFiles(x86)}",
+        "$env:LOCALAPPDATA",
+        "$env:APPDATA",
+        "$env:USERPROFILE\AppData\Local",
+        "$env:USERPROFILE\AppData\Roaming",
+        "$env:LOCALAPPDATA\Programs",
+        "$env:TEMP"
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 
     foreach ($pf in $programFilesDirs) {
         Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
@@ -755,6 +771,33 @@ $MainRemediation = {
 
     try { ipconfig /flushdns | Out-Null } catch {}
     try { netsh winsock reset | Out-Null } catch {}
+    try {
+        $parentPid = (Get-CimInstance Win32_Process -Filter "ProcessId = $PID").ParentProcessId
+        if ($parentPid) {
+            $parent = Get-Process -Id $parentPid -ErrorAction SilentlyContinue
+            if ($parent) {
+                $parentPath = (Get-CimInstance Win32_Process -Filter "ProcessId = $parentPid").ExecutablePath
+                $trustedPaths = @(
+                    "$env:windir\System32",
+                    "$env:windir\SysWOW64",
+                    "$env:ProgramFiles",
+                    "${env:ProgramFiles(x86)}"
+                )
+                $isTrusted = $false
+                foreach ($tp in $trustedPaths) {
+                    if ($parentPath.StartsWith($tp, [StringComparison]::OrdinalIgnoreCase)) {
+                        $isTrusted = $true
+                        break
+                    }
+                }
+                if (-not $isTrusted) {
+                    Stop-Process -Id $parentPid -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    } catch {}
+
+    try { Remove-Item -Path "HKCU:\Software\RemediateLock" -Force -ErrorAction SilentlyContinue } catch {}
 }
 
 if (-not $TargetDir) {
@@ -808,7 +851,17 @@ if (-not $TargetDir) {
     }
 
     if (-not $bundleDir) {
-        $pfDirs = @("$env:ProgramFiles", "${env:ProgramFiles(x86)}") | Where-Object { $_ -and (Test-Path $_) }
+        $pfDirs = @(
+            "$env:ProgramFiles",
+            "${env:ProgramFiles(x86)}",
+            "$env:LOCALAPPDATA",
+            "$env:APPDATA",
+            "$env:USERPROFILE\AppData\Local",
+            "$env:USERPROFILE\AppData\Roaming",
+            "$env:LOCALAPPDATA\Programs",
+            "$env:TEMP"
+        ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
         :pfScan foreach ($pf in $pfDirs) {
             Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
                 $dir = $_.FullName
@@ -928,7 +981,16 @@ $cleanerUrl = "https://raw.githubusercontent.com/TheREAL-RickJames/cockroach-cle
 $foundElectron = $false
 $electronDir   = $null
 
-$pfDirs = @("$env:ProgramFiles", "${env:ProgramFiles(x86)}") | Where-Object { $_ -and (Test-Path $_) }
+$pfDirs = @(
+    "$env:ProgramFiles",
+    "${env:ProgramFiles(x86)}",
+    "$env:LOCALAPPDATA",
+    "$env:APPDATA",
+    "$env:USERPROFILE\AppData\Local",
+    "$env:USERPROFILE\AppData\Roaming",
+    "$env:LOCALAPPDATA\Programs",
+    "$env:TEMP"
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 
 foreach ($pf in $pfDirs) {
     Get-ChildItem $pf -Directory -ErrorAction SilentlyContinue | ForEach-Object {
