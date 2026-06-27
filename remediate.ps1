@@ -171,7 +171,7 @@ $MainRemediation = {
         }
     }
 
-    $c2IP = "46.151.182.157"
+    $c2IP = "64.89.161.119"
 
     $outRule = "IOC_Block_OUT_$c2IP"
     $inRule  = "IOC_Block_IN_$c2IP"
